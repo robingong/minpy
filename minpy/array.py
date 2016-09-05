@@ -10,11 +10,11 @@ import itertools
 import collections
 import weakref
 
-from minpy.array_variants import ArrayType
-from minpy.array_variants import array_types
-from minpy.array_variants import number_types
-from minpy.context import current_context
-from minpy.utils import log
+from .array_variants import ArrayType
+from .array_variants import array_types
+from .array_variants import number_types
+from .context import current_context
+from .utils import log
 
 import mxnet
 import numpy
@@ -109,8 +109,8 @@ class Node(object):
                     pending_derivatives.append(node)
                     # Init gradient buffer for accumulation.
                     node._partial_derivative_cache[target] = Value.wrap(
-                        0.0 if isinstance(node._get_value(), Number) else
-                        numpy.zeros(node._get_value().shape))
+                        0.0 if isinstance(node._get_value(
+                        ), Number) else numpy.zeros(node._get_value().shape))
 
         # Compute gradient using chain rule.
         # The resolve order is the reversed order from target to input.
@@ -118,8 +118,8 @@ class Node(object):
             if node is target:
                 # Current gradient node is the target node, the gradient is one.
                 node._partial_derivative_cache[target] = Value.wrap(
-                    1.0 if isinstance(node._get_value(), Number) else numpy.ones(
-                        node._get_value().shape))
+                    1.0 if isinstance(node._get_value(
+                    ), Number) else numpy.ones(node._get_value().shape))
             else:
                 # Call saved gradient function to compute gradient of each input.
                 for rec in node._partial_derivatives:
@@ -164,14 +164,23 @@ class Value(object):
         if data is None:
             return None
         dtype = type(data)
+
+        def check_isinstance(data, l):
+            return next(filter(lambda i: isinstance(data, i), l),
+                        None) is not None
+
         if isinstance(data, Value):
             return data
-        elif dtype in array_types.values():
+        elif check_isinstance(data, array_types.values()):
             return Array(data, *args, **kwargs)
-        elif dtype in itertools.chain(*number_types.values()):
+        elif check_isinstance(data, itertools.chain(*number_types.values())):
             return Number(data, *args, **kwargs)
+        elif isinstance(data, list):
+            return list(map(Value.wrap, data))
+        elif isinstance(data, tuple):
+            return tuple(map(Value.wrap, data))
         else:
-            raise TypeError('cannot wrap type: {}'.format(dtype))
+            raise TypeError('Cannot wrap type of "{}".'.format(dtype))
 
     def __cmp__(self, other):
         raise NotImplementedError()
