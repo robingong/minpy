@@ -10,14 +10,14 @@ import itertools
 import collections
 import weakref
 
+import mxnet
+import numpy
+
 from .array_variants import ArrayType
 from .array_variants import array_types
 from .array_variants import number_types
 from .context import current_context
 from .utils import log
-
-import mxnet
-import numpy
 
 # pylint: disable= invalid-name
 _logger = log.get_logger(__name__)
@@ -147,22 +147,24 @@ class Value(object):
 
     @property
     def marked_for_bp(self):
-        """Return whether the current Value will be used for autograd."""
+        """Return whether the current `Value` will be used for autograd."""
         return self._marked_for_bp
 
     @property
     def context(self):
+        """Return context of current `Value`."""
         return self._context
 
     @staticmethod
     def wrap(data, *args, **kwargs):
         """Wrap given data into its corresponding wrapper class.
 
-        For example, ``numpy.ndarray`` will be converted to
-        ``minpy.Array`` while float number will become
-        ``minpy.Number``. The allowed array types are defined in
-        ``minpy.array_variants.array_types``; the allowed number types
-        are defined in ``minpy.array_variants.number_types``.
+        For example, :class:`numpy.ndarray` will be converted to
+        :class:`Array` while float number will become
+        :class:`Number`. The allowed array types are defined in
+        :class:`minpy.array_variants.array_types`; the allowed number
+        types are defined in
+        :class:`minpy.array_variants.number_types`.
         """
         if data is None:
             return None
@@ -358,7 +360,7 @@ class Value(object):
 
 class Number(Value, float):
     """Class for numbers with derivative information"""
-    __slots__ = ['_node', '_val', '_marked_for_bp']
+    __slots__ = ['_node', '_val']
 
     def __new__(cls, val, marked=False):
         return float.__new__(cls, val)
@@ -402,7 +404,7 @@ class Array(Value):
     2. Redirect normal member functions to correct member functions of
     underlying array object.
     """
-    __slots__ = ['_node', '_data', '_latest_version', '_marked_for_bp']
+    __slots__ = ['_node', '_data', '_latest_version']
     __array_priority__ = 100.0  # highest priority when compute with numpy.ndarray
 
     def __init__(self, data, marked=False, context=None):
