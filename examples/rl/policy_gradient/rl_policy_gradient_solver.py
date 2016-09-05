@@ -6,8 +6,10 @@ import minpy.numpy as np
 from minpy import core
 from minpy.nn.solver import Solver
 
+
 class RLPolicyGradientSolver(Solver):
-    """A custom `Solver` for policy gradient models.
+    """A custom `Solver` for models trained using policy gradient.
+
     Specifically, the model should provide:
         .forward(X)
         .choose_action(p)
@@ -15,13 +17,38 @@ class RLPolicyGradientSolver(Solver):
         .discount_rewards(rs)
         .preprocessor
     """
+
     def __init__(self, model, env, **kwargs):
+        """ Construct a new `RLPolicyGradientSolver` instance.
+
+        Parameters
+        ----------
+        model : ModelBase
+            A model that supports policy gradient training (see above).
+        env : gym.Environment
+            A `gym` Environment, e.g. Pong-v0.
+
+        Other Parameters
+        ----------------
+        num_episodes : int, optional
+            Number of episodes to train for.
+        update_every : int, optional
+            Update model parameters every `update_every` episodes.
+        save_every : int, optional
+            Save model parameters in the `save_dir` directory every `save_every` episodes.
+        save_dir : str, optional
+            Directory to save model parameters in.
+        resume_from : str, optional
+            Loads a parameter file at this location, resuming model training with those parameters.
+        render : boolean, optional
+            Render the game environment when `True`.
+        """
         self.model = model
         self.env = env
-        self.update_every = kwargs.pop('update_every', 10)
         self.num_episodes = kwargs.pop('num_episodes', 100000)
+        self.update_every = kwargs.pop('update_every', 10)
         self.save_every = kwargs.pop('save_every', 10)
-        self.save_dir = kwargs.pop('save_dir', '')
+        self.save_dir = kwargs.pop('save_dir', './')
         self.resume_from = kwargs.pop('resume_from', None)
         self.render = kwargs.pop('render', False)
 
@@ -30,25 +57,19 @@ class RLPolicyGradientSolver(Solver):
 
         super(RLPolicyGradientSolver, self).__init__(model, None, None, **kwargs)
 
-    def _reset_data_iterators(self):
-        # This `Solver` does not use data iterators.
-        pass
-
-    def init(self):
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir)
-
-        if self.resume_from is not None:
-            with open(self.resume_from) as f:
-                params = pickle.load(f)
-            self.model.params = {k: np.array(v.tolist()) for k, v in params.iteritems()}
-        else:
-            super(RLPolicyGradientSolver, self).init()
-
     def run_episode(self):
-        """Run an episode (multiple games) using the current model to generate training data.
-        :return tuple (xs, ys, rs): The N x input_size observations, N x 1 action labels,
-                and N x 1 discounted rewards obtained from running the episode's N steps.
+        """Run an episode using the current model to generate training data.
+
+        Specifically, this involves repeatedly getting an observation from the environment,
+        performing a forward pass using the single observation to get a distribution over actions
+        (in binary case a probability of a single action), and choosing an action.
+        Finally, rewards are discounted when the episode completes.
+
+        Returns
+        -------
+        (xs, ys, rs) : tuple
+            The N x input_size observations, N x 1 action labels, and N x 1 discounted rewards
+            obtained from running the episode's N steps.
         """
         observation = self.env.reset()
         self.model.preprocessor.reset()
@@ -89,18 +110,35 @@ class RLPolicyGradientSolver(Solver):
         return reward != 0
 
     def train(self):
+        """Trains the model for `num_episodes` iterations.
+
+        On each iteration, runs an episode (see `.run_episode()`) to generate three matrices of
+        observations, labels and rewards (xs, ys, rs) containing data for the _entire_ episode.
+        Then the parameter gradients are found using these episode matrices.
+
+        Specifically, auto-grad is performed on `loss_func`, which does a single forward pass
+        with the episode's observations `xs` then computes the loss using the output of the forward
+        pass and the episode's labels `ys` and discounted rewards `rs`.
+
+        This two-step approach of generating episode data then doing a single forward/backward pass
+        is done to conserve memory during the auto-grad computation.
+        """
+
+        # Accumulate gradients since updates are only performed every `update_every` iterations.
         grad_buffer = self._init_grad_buffer()
 
         for episode_number in xrange(1, self.num_episodes):
             episode_start = time.time()
-            # Generate an episode of training data
+
+            # Generate an episode of training data.
             xs, ys, rs = self.run_episode()
 
-            # Compute loss and gradient
+            # Performs a forward pass and computes loss using an entire episode's data.
             def loss_func(*params):
                 ps = self.model.forward(xs)
                 return self.model.loss(ps, ys, rs)
 
+            # Compute gradients with auto-grad on `loss_func` (duplicated from `Solver`).
             param_arrays = list(self.model.params.values())
             param_keys = list(self.model.params.keys())
             grad_and_loss_func = core.grad_and_loss(loss_func, argnum=range(len(param_arrays)))
@@ -113,17 +151,17 @@ class RLPolicyGradientSolver(Solver):
             for k, v in grads.iteritems():
                 grad_buffer[k] += v
 
+            # Misc. diagnostic info.
             self.loss_history.append(loss.asnumpy())
             episode_time = time.time() - episode_start
-
             if self.verbose:
                 print('Backward pass complete (%.2fs)' % backward_time)
             if self.verbose or episode_number % self.print_every == 0:
                 print('Episode %d complete (%.2fs), loss: %s, reward: %s, running reward: %s' %
                       (episode_number, episode_time, loss, self.episode_reward, self.running_reward))
 
+            # Perform parameter update and reset the `grad_buffer` when appropriate.
             if episode_number % self.update_every == 0:
-                # Perform parameter update.
                 for p, w in self.model.params.items():
                     dw = grad_buffer[p]
                     config = self.optim_configs[p]
@@ -132,8 +170,8 @@ class RLPolicyGradientSolver(Solver):
                     self.optim_configs[p] = next_config
                     grad_buffer[p] = np.zeros_like(w)
 
+            # Save model parameters to `save_dir` when appropriate..
             if episode_number % self.save_every == 0:
-                # Save model parameters.
                 if self.verbose:
                     print('Saving model parameters...')
                 file_name = os.path.join(self.save_dir, 'params_%d.p' % episode_number)
