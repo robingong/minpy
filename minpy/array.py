@@ -156,17 +156,21 @@ class Value(object):
 
     @staticmethod
     def wrap(data, *args, **kwargs):
-        """ Wrap given data into its corresponding wrapper class. For example, `numpy.ndarray`
-        will be converted to `minpy.Array` while float number will become `minpy.Number`. The
-        allowed array types are defined in `minpy.array_variants.array_types`; the allowed number
-        types are defined in `minpy.array_variants.number_types`.
+        """Wrap given data into its corresponding wrapper class.
+
+        For example, ``numpy.ndarray`` will be converted to
+        ``minpy.Array`` while float number will become
+        ``minpy.Number``. The allowed array types are defined in
+        ``minpy.array_variants.array_types``; the allowed number types
+        are defined in ``minpy.array_variants.number_types``.
         """
         if data is None:
             return None
         dtype = type(data)
 
-        def check_isinstance(data, l):
-            return next(filter(lambda i: isinstance(data, i), l),
+        def check_isinstance(data, iterable):
+            """Check whether data type against an iterable."""
+            return next(filter(lambda i: isinstance(data, i), iterable),
                         None) is not None
 
         if isinstance(data, Value):
