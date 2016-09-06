@@ -38,10 +38,10 @@ class Node(object):
         self._partial_derivative_cache = {}
 
     def _get_value(self):
-        r = self._value()
-        if r is None:
+        reference = self._value()
+        if reference is None:
             raise RuntimeError('Reference lost.')
-        return r
+        return reference
 
     def add_partial_derivative(self, grad_func, res, prim):
         """Add partial derivative information.
@@ -360,14 +360,13 @@ class Value(object):
 
 class Number(Value, float):
     """Class for numbers with derivative information"""
-    __slots__ = ['_node', '_val']
+    __slots__ = ['_val']
 
     def __new__(cls, val, marked=False):
         return float.__new__(cls, val)
 
     def __init__(self, val, marked=False, context=None):
         super(Number, self).__init__(marked=marked, context=context)
-        self._node = Node(self)
         self._val = val
 
     def __str__(self):
@@ -389,11 +388,6 @@ class Number(Value, float):
         """ return the underlying value """
         return self._val
 
-    @property
-    def node(self):
-        """ get node which contains derivative information from this array """
-        return self._node
-
 
 class Array(Value):
     """Base array type.
@@ -404,13 +398,12 @@ class Array(Value):
     2. Redirect normal member functions to correct member functions of
     underlying array object.
     """
-    __slots__ = ['_node', '_data', '_latest_version']
+    __slots__ = ['_data', '_latest_version']
     __array_priority__ = 100.0  # highest priority when compute with numpy.ndarray
 
     def __init__(self, data, marked=False, context=None):
         super(Array, self).__init__(marked, context)
         self._data = {}
-        self._node = Node(self)
         atype = Array.to_array_type(data)
         self._data[atype] = data
         self._latest_version = atype
@@ -431,11 +424,6 @@ class Array(Value):
 
     def __repr__(self):
         return self.__str__()
-
-    @property
-    def node(self):
-        """ get node which contains derivative information from this array """
-        return self._node
 
     @property
     def context(self):
@@ -505,12 +493,12 @@ class Array(Value):
     def _synchronize_data(self):
         """ Synchronize the data of different array types. """
         if self._latest_version == ArrayType.MXNET:
-            _logger.info('Copy from mxnet array to numpy array Node#{}'.format(
+            _logger.info('Copy from MXNet array to NumPy array for Array "{}".'.format(
                 id(self)))
             mxarray = self._data[ArrayType.MXNET]
             self._data[ArrayType.NUMPY] = mxarray.asnumpy()
         elif self._latest_version == ArrayType.NUMPY:
-            _logger.info('Copy from numpy array to mxnet array Node#{}'.format(
+            _logger.info('Copy from NumPy array to MXNet array for Array "{}".'.format(
                 id(self)))
             nparray = self._data[ArrayType.NUMPY]
             self._data[ArrayType.MXNET] = mxnet.ndarray.array(
