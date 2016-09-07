@@ -482,7 +482,7 @@ class Array(Value):
     # pylint: disable= invalid-name
     @property
     def T(self):
-        """ Get transposed array """
+        """Get transposed array."""
         return Value._ns.transpose(self)
     # pylint: enable= invalid-name
 

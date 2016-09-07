@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# pylint: disable=logging-format-interpolation
 """Primitive class definitions."""
 from __future__ import absolute_import
 from __future__ import print_function
@@ -9,18 +10,17 @@ import itertools
 import collections
 import operator
 
-from .array import Value
+from . import array
 from .array_variants import ArrayType
 from . import context
 from .utils import log
 from . import tape
 
 # pylint: disable= invalid-name
-_logger = log.get_logger(__name__)
+_logger = log.get_logger(__name__, log.DEBUG)
 # pylint: enable= invalid-name
 
-GradFunc = collections.namedtuple(
-    'GradFunc', ['f', 'extra_grad_indices', 'extra_grad_kws'])
+GradFunc = collections.namedtuple('GradFunc', ['f', 'multi_grad_indices'])
 
 
 class Primitive(object):
@@ -57,7 +57,9 @@ class Primitive(object):
 
     @property
     def type(self):
-        """Return the type of the primitive (:attribute:`ArrayType.NUMPY` or :attribute:`ArrayType.MXNET`)."""
+        """Return the type of the primitive.
+
+        Either :attribute:`ArrayType.NUMPY` or :attribute:`ArrayType.MXNET`."""
         return self._type
 
     @property
@@ -101,20 +103,23 @@ class Primitive(object):
         KeyError
             No corresponding gradient function.
         """
-        # pylint: disable= missing-docstring, invalid-name
+        # pylint: disable=invalid-name
         _logger.debug('Calling {} type {}.'.format(self._func, self.typestr))
 
         def get_val(x, mutate):
+            """Get value of array."""
             try:
-                xv = Value.wrap(x)
-                if mutate:
-                    return xv.get_data_mutable(self._type)
-                else:
-                    return xv.get_data(self._type)
+                xv = array.Value.wrap(x)
+                if isinstance(xv, array.Value):
+                    if mutate:
+                        return xv.get_data_mutable(self._type)
+                    else:
+                        return xv.get_data(self._type)
             # If wrap failed, just return the original value.
             except TypeError:
                 return x
         # Get underlying data.
+        _logger.debug(args)
         arg_values = tuple(
             get_val(args[i], i in self._mutate_args) for i in range(len(args)))
         kwargs_values = {
@@ -130,9 +135,9 @@ class Primitive(object):
         # If you want to do profiling, try to use `minprof(func)`.
         # result_value = minprof(self._func)(*arg_values, **kwargs_values)
 
-        # Whether the result is on the bp path.
         def scan(accum, x):
-            if isinstance(x, Value):
+            """Whether the result is on the bp path."""
+            if isinstance(x, array.Value):
                 return operator.or_(accum, x.marked_for_bp)
             else:
                 return accum
@@ -142,12 +147,12 @@ class Primitive(object):
         need_bp = functools.reduce(scan, itertools.chain(
             args, kwargs.values()), False)
         # Wrap the result raw value with wrapper and node.
-        result = Value.wrap(result_value, marked=need_bp)
+        result = array.Value.wrap(result_value, marked=need_bp)
         if need_bp:
-            # Record partial derivative paths, only for `Value` type values.
+            # Record partial derivative paths, only for `array.Value` type values.
             # If no gradient function is defined, also omit it
             for i, arg in enumerate(args):
-                if isinstance(arg, Value) and arg.marked_for_bp:
+                if isinstance(arg, array.Value) and arg.marked_for_bp:
                     if i not in self._grad_func:
                         _logger.warning('Partial derivative of func "{}" on \
                             argument {} is not defined.'
@@ -158,12 +163,11 @@ class Primitive(object):
                         format(self._func, i))
                     grad_func = self._grad_func[i](result_value, *arg_values,
                                                    **kwargs_values)
-                    tape.global_tape().add_partial_derivative(
-                        grad_func.f, arg, result, self.type,
-                        [args[i] for i in grad_func.extra_grad_indices] +
-                        [kwargs[i] for i in grad_func.extra_grad_kws])
+                    tape.global_tape().add_partial_derivative(grad_func.f, (
+                        arg if grad_func.multi_grad_indices is None else
+                        grad_func.multi_grad_indices), result, self.type)
             for k, arg in kwargs.items():
-                if isinstance(arg, Value) and arg.marked_for_bp:
+                if isinstance(arg, array.Value) and arg.marked_for_bp:
                     if k not in self._grad_func_kw:
                         _logger.warning(
                             'Partial derivative of func "{}" on keyword argument "{}"\
@@ -175,11 +179,9 @@ class Primitive(object):
                     grad_func = self._grad_func_kw[k](
                         result_value, *arg_values, **kwargs_values)
                     tape.global_tape().add_partial_derivative(
-                        grad_func.f, arg, result, self.type,
-                        [args[i] for i in grad_func.extra_grad_indices] +
-                        [kwargs[i] for i in grad_func.extra_grad_kws])
+                        grad_func.f, result, self.type, arg)
         return result
-        # pylint: enable= missing-docstring, invalid-name
+        # pylint: enable=invalid-name
 
     def def_grad(self, func, argnum=0):
         """Define gradient function.
@@ -188,8 +190,7 @@ class Primitive(object):
         :param argnum: Index of the argument.
         :return: Self.
         """
-        self._grad_func[argnum] = GradFunc(
-            f=func, extra_grad_indices=(), extra_grad_kws=())
+        self._grad_func[argnum] = GradFunc(f=func, multi_grad_indices=None)
         return self
 
     def def_grad_kw(self, func, key):
@@ -199,42 +200,47 @@ class Primitive(object):
         :param key: Key name of the argument.
         :return: Self.
         """
-        self._grad_func_kw[key] = GradFunc(
-            f=func, extra_grad_indices=(), extra_grad_kws=())
+        self._grad_func_kw[key] = GradFunc(f=func, multi_grad_indices=None)
         return self
 
     def def_grad_zero(self, argnum=0):
         """Define zero gradient
 
-        :param argnum: Index of the argument.
-        :return: Self.
+        Parameters
+        ----------
+        argnum
+            Index of the argument.
+
+        Returns
+        -------
+        Primitive
+            Self.
         """
         self.def_grad(lambda *args, **kwargs: lambda g: 0.0, argnum)
         return self
 
-    def def_multiple_grad(self, func, argnums, kws):
+    def def_multiple_grad(self, func, argnums):
         """Define multiple gradients with one function.
 
-        :param func: Gradient function.
-        :param argnums: Indexes of the arguments.
-        :param kws: Key names of the arguments.
+        Parameters
+        ----------
+        func
+            Gradient function.
+        argnums
+            Indices of the arguments.
+
+        Returns
+        -------
+        Primitive
+            Self.
         """
-        argnums = set(argnums)
-        kws = set(kws)
+        assert isinstance(argnums, tuple), 'Indexes must be of type tuple.'
+        assert len(argnums) == len(set(argnums)), 'Duplicate entries.'
+
         for argnum in argnums:
-            extra_set = argnums.copy()
-            extra_set.remove(argnum)
             self._grad_func[argnum] = GradFunc(
-                f=func,
-                extra_grad_indices=tuple(extra_set),
-                extra_grad_kws=tuple(kws))
-        for key in kws:
-            extra_set = kws.copy()
-            extra_set.remove(key)
-            self._grad_func_kw[key] = GradFunc(
-                f=func,
-                extra_grad_indices=tuple(argnums),
-                extra_grad_kws=tuple(extra_set))
+                f=func, multi_grad_indices=argnums)
+        return self
 
     def gradable(self, bp_args, bp_kwargs):
         """Return whether the primitive has gradient function defined.
