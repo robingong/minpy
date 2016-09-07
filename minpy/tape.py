@@ -65,11 +65,19 @@ class Tape(object):
 
         add_owner(owner)
 
-    def set_gradient_targets(self, targets):
+    def set_gradient_target(self, target):
         """Set gradient targets to ones."""
-        for i in targets:
-            self._grads[i] = array.Value.wrap(1.0 if isinstance(
-                i, array.Number) else numpy.ones(i.shape))
+
+        def set_single_gradient_target(target):
+            """Set gradient target for one."""
+            if isinstance(target, array.Value):
+                self._grads[target] = array.Value.wrap(1.0 if isinstance(
+                    target, array.Number) else numpy.ones(target.shape))
+            else:
+                for sub_target in target:
+                    set_single_gradient_target(sub_target)
+
+        set_single_gradient_target(target)
 
     def _is_gradable(self, current_array):
         """Check if gradient could now be calculated relative to the specified array.
@@ -89,7 +97,7 @@ class Tape(object):
             return True
 
         for res in self._array_grad_records.get(current_array, []):
-            if not check_grad_record_empty(res):
+            if not check_grad_record_empty(res.result):
                 return False
         return True
 
@@ -109,6 +117,7 @@ class Tape(object):
             if isinstance(arr, array.Value):
                 current_gradient = self._get_cached_gradient(arr)
                 current_gradient += array.Value.wrap(grad)
+                self._grads[arr] = current_gradient
             else:
                 if len(arr) != len(grad):
                     _logger.warning('Number of gradients does not match.')
@@ -149,19 +158,29 @@ class Tape(object):
                         return get_context(result[0])
 
                 for grad_record in grad_records:
-                    result_grad = get_result_grad(grad_record.result,
-                                                  grad_record.primitive_type)
-                    result_grad_value = result_grad.get_data(
-                        grad_record.primitive_type)
+                    result_grad_value = get_result_grad(
+                        grad_record.result, grad_record.primitive_type)
                     _logger.debug(
                         'Calling derivative func "{}" with type "{}".'.format(
                             grad_record.grad_func, grad_record.primitive_type))
                     if grad_record.primitive_type == array_variants.ArrayType.MXNET:
-                        with get_context(result_grad).as_mxnet_context():
+                        with get_context(grad_record.result).as_mxnet_context(
+                        ):
                             grad = grad_record.grad_func(result_grad_value)
                     else:
                         grad = grad_record.grad_func(result_grad_value)
                     self._cumulate_gradient(grad_record.owner, grad)
+
+                def remove_grad_record(owner, grad_record):
+                    """Remove gradient record from owner."""
+                    if isinstance(owner, array.Value):
+                        self._array_grad_records[owner].remove(grad_record)
+                    else:
+                        for sub_owner in owner:
+                            remove_grad_record(sub_owner, grad_record)
+
+                for grad_record in grad_records.copy():
+                    remove_grad_record(grad_record.owner, grad_record)
             else:
 
                 def push_grad_record(arr):
@@ -172,8 +191,8 @@ class Tape(object):
                         for sub_arr in arr:
                             push_grad_record(sub_arr)
 
-                for result in self._array_grad_records[current_array]:
-                    push_grad_record(result)
+                for rec in self._array_grad_records[current_array]:
+                    push_grad_record(rec.result)
         return self._get_cached_gradient(origin)
 
 
@@ -181,7 +200,7 @@ class Tape(object):
 def tape():
     """Convenience context wrapper for creating temporary `Tape`."""
     Tape.global_tape = Tape()
-    yield
+    yield Tape.global_tape
     Tape.global_tape = None
 
 

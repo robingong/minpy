@@ -5,7 +5,6 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
-import mxnet as mx
 import functools
 
 from .array import Value
@@ -21,34 +20,42 @@ _logger = log.get_logger(__name__)
 def grad_and_loss(func, argnum=0, method=False):
     """Return function that computes both gradient and loss value.
 
-    :param func: The forward (loss) function.
-    :param argnum: The index of argument to calculate gradient for.
-    :param method: Skip the first argument 'self' if func is a method.
-    :return: A function that would compute both the gradient of the specified argument and loss value.
+    Parameters
+    ----------
+    func
+        The forward (loss) function.
+    argnum
+        The index of argument to calculate gradient for.
+    method
+        Skip the first argument 'self' if func is a method.
+
+    Returns
+    -------
+    function
+        A function that would compute both the gradient of the specified argument and loss value.
     """
-    # pylint: disable= missing-docstring
+
     @functools.wraps(func)
     def wrapped(*args):
+        """Wrapped function."""
         if method:
             args = args[1:]
         arrays = tuple(Value.wrap(a) for a in args)
         argnums = [argnum] if isinstance(argnum, int) else argnum
         for i in argnums:
             arrays[i]._marked_for_bp = True
-        with tape.tape():
+        with tape.tape() as current_tape:
             result_array = func(*arrays)
             _logger.debug('Forward pass finished. Start backward pass.')
-            grad_vals = []
-            for i in argnums:
-                grad_vals.append(arrays[i].node.partial_derivative(
-                    result_array.node))
-                arrays[i]._marked_for_bp = False
+            current_tape.set_gradient_target(result_array)
+            grad_vals = [current_tape.get_gradient(arrays[i]) for i in argnums]
             if len(grad_vals) == 1:
                 grad_vals = grad_vals[0]
+        for i in argnums:
+            arrays[i]._marked_for_bp = False
         return grad_vals, result_array
 
     return wrapped
-    # pylint: enable= missing-docstring
 
 
 def grad(func, argnum=0, method=False):

@@ -82,6 +82,9 @@ class Value(object):
         else:
             raise TypeError('Cannot wrap type of "{}".'.format(dtype))
 
+    def __hash__(self):
+        return id(self)
+
     def __cmp__(self, other):
         raise NotImplementedError()
 

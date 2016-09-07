@@ -17,7 +17,7 @@ from .utils import log
 from . import tape
 
 # pylint: disable= invalid-name
-_logger = log.get_logger(__name__, log.DEBUG)
+_logger = log.get_logger(__name__)
 # pylint: enable= invalid-name
 
 GradFunc = collections.namedtuple('GradFunc', ['f', 'multi_grad_indices'])
@@ -98,13 +98,11 @@ class Primitive(object):
 
         Raises
         ------
-        IndexError
-            No corresponding gradient function.
-        KeyError
+        IndexError, KeyError
             No corresponding gradient function.
         """
         # pylint: disable=invalid-name
-        _logger.debug('Calling {} type {}.'.format(self._func, self.typestr))
+        _logger.debug('Calling "{}" type "{}".'.format(self._func, self.typestr))
 
         def get_val(x, mutate):
             """Get value of array."""
@@ -115,11 +113,13 @@ class Primitive(object):
                         return xv.get_data_mutable(self._type)
                     else:
                         return xv.get_data(self._type)
+                else:
+                    # Return original input for tuples and lists.
+                    return x
             # If wrap failed, just return the original value.
             except TypeError:
                 return x
         # Get underlying data.
-        _logger.debug(args)
         arg_values = tuple(
             get_val(args[i], i in self._mutate_args) for i in range(len(args)))
         kwargs_values = {
@@ -161,11 +161,12 @@ class Primitive(object):
                     _logger.debug(
                         'Adding partial derivative to func "{}" on argument {}.'.
                         format(self._func, i))
-                    grad_func = self._grad_func[i](result_value, *arg_values,
-                                                   **kwargs_values)
-                    tape.global_tape().add_partial_derivative(grad_func.f, (
-                        arg if grad_func.multi_grad_indices is None else
-                        grad_func.multi_grad_indices), result, self.type)
+                    grad_func_rec = self._grad_func[i]
+                    grad_func = grad_func_rec.f(result_value, *arg_values,
+                                                **kwargs_values)
+                    tape.global_tape().add_partial_derivative(grad_func, (
+                        arg if grad_func_rec.multi_grad_indices is None else
+                        grad_func_rec.multi_grad_indices), result, self.type)
             for k, arg in kwargs.items():
                 if isinstance(arg, array.Value) and arg.marked_for_bp:
                     if k not in self._grad_func_kw:
@@ -176,10 +177,11 @@ class Primitive(object):
                     _logger.debug(
                         'Adding partial derivative to func "{}" on keyword argument "{}".'.
                         format(self._func, k))
-                    grad_func = self._grad_func_kw[k](
-                        result_value, *arg_values, **kwargs_values)
+                    grad_func_rec = self._grad_func_kw[k]
+                    grad_func = grad_func_rec.f(result_value, *arg_values,
+                                                **kwargs_values)
                     tape.global_tape().add_partial_derivative(
-                        grad_func.f, result, self.type, arg)
+                        grad_func, arg, result, self.type)
         return result
         # pylint: enable=invalid-name
 
