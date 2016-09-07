@@ -1,14 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# pylint: disable= unused-argument, protected-access,
-# logging-format-interpolation
+# pylint: disable=unused-argument, protected-access, logging-format-interpolation
 """Base type for arrays."""
 from __future__ import absolute_import
 from __future__ import print_function
 
 import itertools
 import collections
-import weakref
 
 import mxnet
 import numpy
@@ -21,112 +19,8 @@ from .utils import log
 
 # pylint: disable= invalid-name
 _logger = log.get_logger(__name__)
+
 # pylint: enable= invalid-name
-
-GradRecord = collections.namedtuple('GradRecord',
-                                    ['grad_func', 'result', 'primitive'])
-
-
-class Node(object):
-    """Node representing data with gradient information."""
-    __slots__ = ['_value', '_partial_derivatives', '_partial_derivative_cache']
-
-    def __init__(self, value):
-        """Initialize."""
-        self._value = weakref.ref(value)
-        self._partial_derivatives = []
-        self._partial_derivative_cache = {}
-
-    def _get_value(self):
-        reference = self._value()
-        if reference is None:
-            raise RuntimeError('Reference lost.')
-        return reference
-
-    def add_partial_derivative(self, grad_func, res, prim):
-        """Add partial derivative information.
-
-        :param function grad_func: The function to calculate derivative with respect to result.
-        :param Value res: Variable that represent the result of original function.
-        :param Primitive prim: Primitive that the gradient function belongs to.
-        """
-        assert isinstance(res, Value), 'Result is not of type `Value`.'
-        self._partial_derivatives.append(
-            GradRecord(
-                grad_func=grad_func, result=res, primitive=prim))
-
-    def partial_derivative(self, target):
-        """Get partial derivative. Mathematically, this function computes
-
-        .. math::
-
-           \\frac{\\partial target}{\\partial self}.
-
-        :param Node target: Target variable to compute partial derivative.
-        :return: Partial derivative.
-        """
-
-        def _call_partial_derivative(rec):
-            """Helper function for calling gradient function.
-
-            :param GradRecord rec: The gradient record to be called.
-            :return: Gradient result.
-            """
-            # The gradient of the target with respect to the result node should already be
-            # computed.
-            result_grad = rec.result.node._partial_derivative_cache[target]
-            result_grad_value = result_grad.get_data(rec.primitive._type)
-            _logger.debug('Call derivative func of "{}".'.format(
-                rec.primitive))
-            # Call gradient function to compute input gradient from result gradient
-            if rec.primitive.type == ArrayType.MXNET:
-                with result_grad.context.as_mxnet_context() as ctx:
-                    grad = rec.grad_func(result_grad_value)
-            else:
-                grad = rec.grad_func(result_grad_value)
-            return grad
-
-        # Array used to store intermediate gradients to be computed.
-        pending_derivatives = []
-
-        # Use DFS search to find all derivatives need to be computed in order to get the gradient
-        # of final target.
-        dfs_queue = [self]
-        while len(dfs_queue) != 0:
-            node = dfs_queue[-1]
-            assert isinstance(target, Node), 'Type is not `Node`.'
-            ready = True
-            if target is not node:
-                for rec in node._partial_derivatives:
-                    n = rec.result.node
-                    if target not in n._partial_derivative_cache:
-                        dfs_queue.append(n)
-                        ready = False
-            # Successors all enqueued.
-            if ready:
-                dfs_queue.pop()
-                if target not in node._partial_derivative_cache:
-                    pending_derivatives.append(node)
-                    # Init gradient buffer for accumulation.
-                    node._partial_derivative_cache[target] = Value.wrap(
-                        0.0 if isinstance(node._get_value(
-                        ), Number) else numpy.zeros(node._get_value().shape))
-
-        # Compute gradient using chain rule.
-        # The resolve order is the reversed order from target to input.
-        for node in pending_derivatives:
-            if node is target:
-                # Current gradient node is the target node, the gradient is one.
-                node._partial_derivative_cache[target] = Value.wrap(
-                    1.0 if isinstance(node._get_value(
-                    ), Number) else numpy.ones(node._get_value().shape))
-            else:
-                # Call saved gradient function to compute gradient of each input.
-                for rec in node._partial_derivatives:
-                    node._partial_derivative_cache[target] += Value.wrap(
-                        _call_partial_derivative(rec))
-
-        return self._partial_derivative_cache[target]
 
 
 class Value(object):
@@ -358,6 +252,7 @@ class Value(object):
     # pylint: enable= no-self-use
 
 
+#pylint: disable=abstract-method
 class Number(Value, float):
     """Class for numbers with derivative information"""
     __slots__ = ['_val']
@@ -469,12 +364,12 @@ class Array(Value):
                 'Orders other than C are not currently supported.')
         return Value._ns.reshape(self, new_shape)
 
-    def dot(self, b, out=None):
+    def dot(self, other, out=None):
         """ Function for dot production. """
         if out is not None:
             # TODO: Support out argument
-            raise ValueError('out option is not supported.')
-        return Value._ns.dot(self, b)
+            raise ValueError('Out option is not supported.')
+        return Value._ns.dot(self, other)
 
     def argmax(self, axis=None, out=None):
         """ Returns the indices of the maximum values along an axis
@@ -493,13 +388,15 @@ class Array(Value):
     def _synchronize_data(self):
         """ Synchronize the data of different array types. """
         if self._latest_version == ArrayType.MXNET:
-            _logger.info('Copy from MXNet array to NumPy array for Array "{}".'.format(
-                id(self)))
+            _logger.info(
+                'Copy from MXNet array to NumPy array for Array "{}".'.format(
+                    id(self)))
             mxarray = self._data[ArrayType.MXNET]
             self._data[ArrayType.NUMPY] = mxarray.asnumpy()
         elif self._latest_version == ArrayType.NUMPY:
-            _logger.info('Copy from NumPy array to MXNet array for Array "{}".'.format(
-                id(self)))
+            _logger.info(
+                'Copy from NumPy array to MXNet array for Array "{}".'.format(
+                    id(self)))
             nparray = self._data[ArrayType.NUMPY]
             self._data[ArrayType.MXNET] = mxnet.ndarray.array(
                 nparray, ctx=self._context.as_mxnet_context())
